@@ -1,0 +1,236 @@
+definition:
+  actions:
+  - action: tools.aws_boto3.call_paginated_api
+    args:
+      paginator_name: list_findings
+      params:
+        DetectorId: 10cac63dffd15938d6a725cecca06390
+        FindingCriteria:
+          Criterion:
+            resource.resourceType:
+              Eq:
+              - S3Bucket
+              - IAMUser
+              - EC2Instance
+            severity:
+              Gte: 7
+        MaxResults: 50
+      service_name: guardduty
+    depends_on: []
+    description: ''
+    for_each: null
+    interaction: null
+    join_strategy: all
+    ref: list_finding_ids
+    retry_policy:
+      max_attempts: 1
+      retry_until: null
+      timeout: 300
+    run_if: null
+    start_delay: 0.0
+    wait_until: null
+  - action: core.transform.scatter
+    args:
+      collection: ${{ FN.flatten(ACTIONS.get_findings.result.Findings) }}
+    depends_on:
+    - get_findings
+    description: ''
+    for_each: null
+    interaction: null
+    join_strategy: all
+    ref: scatter
+    retry_policy:
+      max_attempts: 1
+      retry_until: null
+      timeout: 300
+    run_if: null
+    start_delay: 0.0
+    wait_until: null
+  - action: core.transform.reshape
+    args:
+      value: ${{ ACTIONS.scatter.result }}
+    depends_on:
+    - scatter
+    description: ''
+    for_each: null
+    interaction: null
+    join_strategy: all
+    ref: sample_finding
+    retry_policy:
+      max_attempts: 1
+      retry_until: null
+      timeout: 300
+    run_if: null
+    start_delay: 0.0
+    wait_until: null
+  - action: tools.aws_boto3.call_api
+    args:
+      method_name: get_findings
+      params:
+        DetectorId: 10cac63dffd15938d6a725cecca06390
+        FindingIds: ${{ FN.flatten(ACTIONS.list_finding_ids.result[*].FindingIds)
+          }}
+      service_name: guardduty
+    depends_on:
+    - list_finding_ids
+    description: ''
+    for_each: null
+    interaction: null
+    join_strategy: all
+    ref: get_findings
+    retry_policy:
+      max_attempts: 1
+      retry_until: null
+      timeout: 300
+    run_if: null
+    start_delay: 0.0
+    wait_until: null
+  - action: core.require
+    args:
+      conditions: ${{ ACTIONS.sample_finding.result.Type in FN.serialize_json(ACTIONS.faked_finding.result)
+        }}
+    depends_on:
+    - faked_finding
+    description: ''
+    for_each: null
+    interaction: null
+    join_strategy: all
+    ref: finding_type_unchanged
+    retry_policy:
+      max_attempts: 1
+      retry_until: null
+      timeout: 300
+    run_if: null
+    start_delay: 0.0
+    wait_until: null
+  - action: ai.agent
+    args:
+      actions:
+      - tools.tavily.web_search
+      files:
+        sample_finding.json: ${{ FN.to_base64(FN.serialize_json(ACTIONS.sample_finding.result))
+          }}
+      model_name: gpt-4o-mini-2024-07-18
+      model_provider: openai
+      model_settings:
+        extra_body:
+          response_format:
+            type: json_object
+      user_prompt: "You are a AWS GuardDuty expert. You are given a single AWS GuardDuty\
+        \ sample finding in JSON format. The values are all fake. Your task is to\
+        \ create a new finding with the same keys but with realistic up-to-date values.\n\
+        \n<sample_finding>\nThe sample GuardDuty finding is stored as a JSON file\
+        \ named `sample_finding.json` in the current working directory. Use the filesystem\
+        \ tools to locate and read it.\n</sample_finding>\n\n<is_malicious>True</is_malicious>\n\
+        \n<task>\nFind and replace the fake IoCs in <sample_finding_file> with realistic\
+        \ up-to-date values:\n- If <is_malicious> is true, the IoCs should be replaced\
+        \ with realistic up-to-date values that are known to be malicious\n- If <is_malicious>\
+        \ is false, the IoCs should be replaced with realistic up-to-date values that\
+        \ are known to be benign\n</task>\n\n<indicators_of_compromise>\nIncludes\
+        \ but not limited to:\n- IP addresses\n- URLs\n- Domains\n- Files\n- Processes\n\
+        - Users\n- Hostnames\n- ASNs\n</indicators_of_compromise>\n\n<aws_specific_identifierss>\n\
+        Includes but not limited to:\n- ASN\n- AccountId\n- Region\n- InstanceId\n\
+        - BucketName\n</aws_specific_identifiers>\n\n<instructions>\n1. Use the `read_file`\
+        \ tool to read the GuardDuty finding in <sample_finding_file>.\n2. Search\
+        \ the web for real-world IoCs that match the <is_malicious> parameter.\n3.\
+        \ Use the `find_and_replace` tool to replace the fake IP addresses, domains,\
+        \ URLs, and other IoCs in <sample_finding_file> with real-world values:\n\
+        \  - Replace all AWS specific identifiers (e.g. ASN, AccountId) with realistic\
+        \ names.\n  - Replace all IoCs with real-world values that match the <is_malicious>\
+        \ parameter.\n  - For false positives, use legitimate services that commonly\
+        \ trigger security alerts (e.g., cloud provider IPs, CDN services, public\
+        \ DNS).\n  - For true positives, use currently active malicious infrastructure\
+        \ from threat intelligence sources.\n</instructions>\n\n<tool_calling>\nMANDATORY:\
+        \ You MUST use the Tavily web search tool to find real, current IoCs from\
+        \ these specific sources:\n\nFor MALICIOUS IoCs (<is_malicious> = true), search\
+        \ these sites:\n- site:urlhaus.abuse.ch - For current malicious URLs/domains\n\
+        - site:threatfox.abuse.ch - For active malware IoCs and C2 servers\n- site:urlscan.io\
+        \ - For recently scanned suspicious/malicious sites\n- site:thedfirreport.com\
+        \ - For IoCs from recent ransomware and breach reports\n\nFor BENIGN IoCs\
+        \ (<is_malicious> = false), search for:\n- Common cloud provider infrastructure\
+        \ that triggers false positives\n- Major CDN networks and their IP ranges\n\
+        - Public DNS resolvers and their addresses\n- Legitimate enterprise services\
+        \ (email, collaboration tools)\n\nSearch strategy:\n1. Identify what type\
+        \ of IoC you need based on the sample finding\n2. Search the appropriate sites\
+        \ above for that IoC type\n3. Select IoCs that match the finding's context\n\
+        4. Ensure the IoC is currently active/valid\n</tool_calling>\n\n<tool_calling_success_criteria>\n\
+        CRITICAL: Your sources array MUST include URLs that:\n- Display the actual\
+        \ IoC you selected (not just general information)\n- Come from your actual\
+        \ web search results\n- Show the IoC in context (threat feed, IP range list,\
+        \ security report, etc.)\n\nEach source must be a real URL from your search\
+        \ that contains the specific IoC used in your finding.\n</tool_calling_success_criteria>\n\
+        \n<real_world_iocs>\nAn IoC is considered a real-world IoC if it:\n- Actually\
+        \ exists and is actively used on the internet\n- Can be verified through public\
+        \ sources (DNS lookups, WHOIS, threat intel feeds)\n- For benign IoCs: belongs\
+        \ to legitimate services like AWS, Microsoft, Google, CDNs, or other well-known\
+        \ providers\n- For malicious IoCs: appears in current threat intelligence\
+        \ feeds or has been associated with actual attacks\n</real_world_iocs>\n\n\
+        <response_format>\nOutput a single, valid JSON object with exactly these two\
+        \ keys:\n{\n    \"rationale\": \"<string>\",\n    \"source_url\": \"<string>\"\
+        \n}\n\n- `rationale`: A string explaining the reasoning or justification for\
+        \ the IoCs you chose. IoCs MUST be defanged in the rationale.\n- `source_url`:\
+        \ A string containing the URL of the threat intel report or blog post that\
+        \ contains the IoCs.\n</response_format>\n\n<defanging_iocs>\n- IP addresses:\
+        \ Replace dots with [.] (e.g., 192[.]168[.]1[.]1)\n- Domains: Replace dots\
+        \ with [.] (e.g., malicious[.]domain[.]com)\n- URLs: Replace dots and ://\
+        \ (e.g., hxxps://malicious[.]site[.]com)\n- This applies to ALL IoCs in both\
+        \ the rationale and finding fields\n</defanging_iocs>\n\n<success_criteria>\n\
+        - JSON fields in <sample_finding_file> are unchanged\n- IoCs in in <sample_finding_file>\
+        \ are replaced with REAL VALUES with a match from the web search results\n\
+        - <sample_finding_file> must remain a valid JSON object after `find_and_replace`\
+        \ is called\n- `source_url` must be a real URL from your search that contains\
+        \ the specific IoC used in your finding\n</success_criteria>\n\n<example_rationale>\n\
+        - \"The EC2 instance made numerous metadata service requests to 169[.]254[.]169[.]254\
+        \ which is normal behavior for AWS workloads retrieving IAM credentials. The\
+        \ high volume triggered the anomaly detection due to a newly deployed application\
+        \ polling for updated credentials.\"\n- \"Connections to outlook[.]office365[.]com\
+        \ from the EC2 instance were flagged as potential data exfiltration, but investigation\
+        \ revealed this was a legitimate email integration service syncing with Office\
+        \ 365.\"\n- \"DNS queries to 8[.]8[.]8[.]8 were flagged as potential DNS tunneling,\
+        \ but this is Google's public DNS resolver being used by the instance for\
+        \ normal domain resolution.\"\n- \"High volume requests to Akamai CDN IPs\
+        \ (104[.]74[.]58[.]4) triggered brute force detection, but these were legitimate\
+        \ API calls to a SaaS application using Akamai's infrastructure.\"\n</example_rationale>"
+    depends_on:
+    - sample_finding
+    description: ''
+    for_each: null
+    interaction: null
+    join_strategy: all
+    ref: faker
+    retry_policy:
+      max_attempts: 1
+      retry_until: null
+      timeout: 600
+    run_if: null
+    start_delay: 0.0
+    wait_until: null
+  - action: core.transform.reshape
+    args:
+      value: ${{FN.deserialize_json(FN.from_base64(ACTIONS.faker.result.files."sample_finding.json"))}}
+    depends_on:
+    - faker
+    description: ''
+    for_each: null
+    interaction: null
+    join_strategy: all
+    ref: faked_finding
+    retry_policy:
+      max_attempts: 1
+      retry_until: null
+      timeout: 300
+    run_if: null
+    start_delay: 0.0
+    wait_until: null
+  config:
+    environment: default
+    timeout: 600.0
+  description: ''
+  entrypoint:
+    expects: {}
+    ref: null
+  error_handler: ''
+  inputs: {}
+  returns: null
+  title: GuardDuty faker
+  triggers: []
